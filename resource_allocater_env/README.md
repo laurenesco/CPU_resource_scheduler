@@ -1,9 +1,6 @@
 # CPU Core Thermal Simulation — Environment Spec
 
-Status: **spec only** — no implementation, no numeric constants finalized. This document
-defines the state model, the thermodynamic relationships between quantities, and the
-event/ordering semantics, so that any concrete heat-transfer equation and any concrete
-numeric constants can be dropped in later without changing this structure.
+Status: Early problem spec
 
 ---
 
@@ -48,11 +45,7 @@ shut-down episode" independent of exactly where its temperature sits at any give
 
 ---
 
-## 2. Units & Conventions — ASSUMPTION, needs your confirmation
-
-Your recollection ("W/sec and C/sec") and the existing bullets ("2W/sec" heating/cooling)
-mix power and temperature-rate units without a stated conversion. I'm resolving this as
-follows; flag if you remember the original doing something different:
+## 2. Units & Conventions 
 
 - **`load`** is in **watts (W)** — a static input, not a rate.
 - **`temperature`** and all *rates of temperature change* are in **°C/sec**.
@@ -60,19 +53,15 @@ follows; flag if you remember the original doing something different:
   are also expressed in **°C/sec** — i.e. "how much temperature-rise-rate this cooling
   resource can offset," not raw watts. This sidesteps needing a separate watts→°C thermal-mass
   constant, at the cost of folding that constant into the (still-open) heat function `H` below.
-- The literal "2 W/sec" phrasing in your original bullets is read as shorthand for
-  "2 °C/sec," consistent with this convention.
 
-If the original Optiver equations actually kept watts and °C/sec as separate unit systems
-connected by an explicit thermal-mass/specific-heat constant, that constant becomes another
-open parameter of `H` (§3.1) rather than a structural change — the rest of this spec holds
-either way.
+Watts and °C/sec are separate unit systems connected by an explicit thermal-mass/specific-heat constant, this constant will become another
+open parameter of `H` (§3.1) rather than a structural change — the rest of this spec holds either way.
 
 ---
 
 ## 3. Thermodynamics
 
-### 3.1 Heat-gain function `H(load)` — OPEN, pluggable
+### 3.1 Heat-gain function `H(load)` 
 
 `H: watts → °C/sec` is the rate at which a core's own compute heat would raise its
 temperature, **before any cooling is applied**. Structural constraints only (no coefficients):
@@ -80,10 +69,10 @@ temperature, **before any cooling is applied**. Structural constraints only (no 
 - Monotonic non-decreasing in `load`.
 - `H(0) ≤ 0` — an idle core (zero load) has non-positive self-heating, consistent with
   "idle cores cool" being a *default* behavior, not something requiring passive/active help.
-- The two numbers you already have — idle self-cools at ~2°C/sec, an active core heats at
+- Idle self-cools at ~2°C/sec, an active core heats at
   ~2°C/sec — are read as **two sample outputs of `H`** (e.g. `H(0) ≈ -2`, `H(load_ref) ≈ +2`
   for some reference load), not the definition of `H` itself. The actual shape (linear,
-  piecewise, saturating at high load, etc.) is left open.
+  piecewise, saturating at high load, etc.) is still open.
 
 ### 3.2 Cooling need
 
@@ -94,15 +83,14 @@ need_i(t) = max(H(load_i(t)), 0)
 This is "how much cooling this core's own heat generation demands right now" — i.e. the
 rate that must be offset to hold temperature steady. Idle cores (where `H ≤ 0`) have
 `need = 0` by construction: they're already net-cooling on their own and don't generate
-demand. This is consistent with — not in conflict with — "passive cooling applies to all
-cores, even idle": every core is *eligible* to receive an allocation from the passive pool;
+demand. Every core is *eligible* to receive an allocation from the passive pool;
 idle cores simply compute to zero because they have nothing to offset. Passive cooling isn't
 excluded from idle cores, it's just naturally moot for them under this formula.
 
-### 3.3 Passive cooling — shared, proportional to need
+### 3.3 Passive cooling: shared, proportional to need
 
 Two sub-cases, since "proportional to need" is ambiguous when supply exceeds total demand.
-Proposed rule (**flag if you recall the original doing it differently**):
+Proposed rule:
 
 ```
 total_need(t) = sum(need_i(t) for all cores i)
@@ -113,13 +101,6 @@ if total_need <= passive_cooling_capacity:
 else:
     passive_share_i = passive_cooling_capacity * (need_i(t) / total_need(t))   # rationed
 ```
-
-i.e. proportionality only governs *rationing under contention*; when there's slack, every
-core simply gets what it needs and the rest is unused. This is the standard reading of
-"proportional to need" as a fairness rule, but it's a real design choice — the strict
-alternative (`passive_share_i = capacity * need_i/total_need` unconditionally, which can
-over-supply cores when slack exists) is also defensible and worth deciding explicitly before
-implementation.
 
 ### 3.4 Active cooling — per-core fixed slot, deficit-triggered
 
@@ -132,11 +113,10 @@ else:
     active_share_i(t) = 0
 ```
 
-Per your answers: active cooling is a **fixed constant per running core**, **not pooled**
+Active cooling is a **fixed constant per running core**, **not pooled**
 across cores — so there's no cross-core contention for active cooling the way there is for
 passive. A core either draws from its own fixed active budget or it doesn't; other cores'
-active cooling is unaffected either way. (This also makes the "reclaim on shutdown" question
-moot — there's no shared pool to reclaim into.)
+active cooling is unaffected either way. 
 
 ### 3.5 Net rate & integration
 
@@ -165,8 +145,8 @@ threshold, computed exactly (§6.2), not approximated at tick granularity.
 - The latch clears once `temperature` drops below a **hysteresis threshold strictly lower
   than the shutdown threshold** (exact value open/TBD — this gap is what prevents
   shutdown/restart chattering right at the boundary).
-- Clearing the latch does **not** by itself mean the core starts running. Per your agreement:
-  a core only actually transitions out of `SHUTDOWN` if it has a **nonzero `requested_load`**
+- Clearing the latch does **not** by itself mean the core starts running. A core only actually
+  transitions out of `SHUTDOWN` if it has a **nonzero `requested_load`**
   pending at that moment. If `requested_load == 0` when the hysteresis threshold is crossed,
   the core stays latched `SHUTDOWN` — there's no point restarting into `IDLE` with nothing to
   do, and a subsequent `set_core_load` call with nonzero watts is what actually triggers
@@ -201,14 +181,12 @@ latch needed here, since there's no hysteresis concern between these two states.
 ### 6.1 What counts as "externally visible" (Q11)
 
 `status` transitions — `RUNNING↔IDLE↔SHUTDOWN`, in any direction — are the visible events.
-Chosen over a narrower "just shutdown/restart" list for educational depth: it exercises the
+It exercises the
 full 3-state FSM uniformly (§1.2/§4) rather than special-casing shutdown as the only
 interesting transition, and it gives an RL agent observing `tick()`'s return value a signal
 for load actually taking effect (RUNNING↔IDLE), not just thermal emergencies.
 **Explicitly excluded:** load-magnitude changes that don't cross zero (e.g. 40W→60W while
-already `RUNNING`) are not reported — worth confirming this matches what you want the agent
-to be able to observe, versus needing a separate state-query method for continuous values
-(temperature, load, remaining budget) alongside the event-only `tick()` return.
+already `RUNNING`) are not reported.
 
 ### 6.2 Exact threshold crossings, not sub-stepping
 
@@ -225,8 +203,7 @@ For each core with a `pending_load_change` timestamp `≤` the target `timestamp
 
 1. Integrate temperature from `last_synced_ts` to `pending_load_change.timestamp` using the
    **old** load, checking for a threshold crossing in that sub-interval.
-2. Apply the new load value at `pending_load_change.timestamp` (load-changes-before-physics,
-   per your answer to Q9).
+2. Apply the new load value at `pending_load_change.timestamp` 
 3. Continue integrating from `pending_load_change.timestamp` to `timestamp` using the **new**
    load, again checking for a crossing.
 
@@ -246,8 +223,7 @@ exact instant) tie-break by ascending `core_id` for full determinism.
 - Exact functional form and coefficients of `H(load)`.
 - Numeric value of `passive_cooling_capacity` and `active_cooling_capacity_per_core`.
 - Numeric restart hysteresis gap below the 80°C shutdown threshold.
-- §2's units assumption (W vs °C/sec conflation) — confirm or correct against what you recall
-  of the original Optiver equations.
+- §2's units assumption (W vs °C/sec) 
 - §3.3's slack-vs-strict-proportional interpretation of "proportional to need."
-- §6.1's scope of "externally visible" — confirm event-only vs. also wanting a continuous
+- §6.1's scope of "externally visible". Confirm event-only vs. also wanting a continuous
   state-query method.
